@@ -87,8 +87,8 @@ def load_geojson(path):
     except FileNotFoundError:
         return None
 
-india_states_geo = load_geojson("/content/file2_normalized.geojson")
-india_districts_geo = load_geojson("/content/india (2).geojson")
+india_states_geo = load_geojson("./file2_normalized.geojson")
+india_districts_geo = load_geojson("./india (2).geojson")
 
 # ====================================================
 # STATE NAME NORMALIZATION 
