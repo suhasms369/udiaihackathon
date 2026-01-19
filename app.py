@@ -36,38 +36,56 @@ st.caption(
 # ====================================================
 @st.cache_data
 def load_data():
-    files = [f for f in os.listdir('.') if f.endswith('.csv')]
+    # Try multiple possible locations for CSV files
+    search_paths = ['.', '/mount/src/udiaihackathon', 'data']
+    files = []
+    
+    for path in search_paths:
+        try:
+            if os.path.exists(path):
+                found_files = [os.path.join(path, f) for f in os.listdir(path) if f.endswith('.csv')]
+                files.extend(found_files)
+        except Exception:
+            continue
+    
+    if not files:
+        return pd.DataFrame()
+    
     frames = []
 
     for f in files:
-        df = pd.read_csv(f)
-        df.columns = df.columns.str.strip().str.lower()
+        try:
+            df = pd.read_csv(f)
+            df.columns = df.columns.str.strip().str.lower()
 
-        if not {'date', 'state', 'district'}.issubset(df.columns):
+            if not {'date', 'state', 'district'}.issubset(df.columns):
+                continue
+
+            # ENROLMENT
+            if {'age_0_5', 'age_5_17', 'age_18_greater'}.issubset(df.columns):
+                df['child_ops'] = df['age_0_5'] + df['age_5_17']
+                df['adult_ops'] = df['age_18_greater']
+                df['data_type'] = 'New Enrolment'
+
+            # BIOMETRIC UPDATE
+            elif {'bio_age_5_17', 'bio_age_17_'}.issubset(df.columns):
+                df['child_ops'] = df['bio_age_5_17']
+                df['adult_ops'] = df['bio_age_17_']
+                df['data_type'] = 'Biometric Update'
+
+            # DEMOGRAPHIC UPDATE
+            elif {'demo_age_5_17', 'demo_age_17_'}.issubset(df.columns):
+                df['child_ops'] = df['demo_age_5_17']
+                df['adult_ops'] = df['demo_age_17_']
+                df['data_type'] = 'Demographic Update'
+            else:
+                continue
+
+            df = df[['date', 'state', 'district', 'child_ops', 'adult_ops', 'data_type']]
+            frames.append(df)
+        except Exception as e:
+            st.warning(f"Error loading {f}: {str(e)}")
             continue
-
-        # ENROLMENT
-        if {'age_0_5', 'age_5_17', 'age_18_greater'}.issubset(df.columns):
-            df['child_ops'] = df['age_0_5'] + df['age_5_17']
-            df['adult_ops'] = df['age_18_greater']
-            df['data_type'] = 'New Enrolment'
-
-        # BIOMETRIC UPDATE
-        elif {'bio_age_5_17', 'bio_age_17_'}.issubset(df.columns):
-            df['child_ops'] = df['bio_age_5_17']
-            df['adult_ops'] = df['bio_age_17_']
-            df['data_type'] = 'Biometric Update'
-
-        # DEMOGRAPHIC UPDATE
-        elif {'demo_age_5_17', 'demo_age_17_'}.issubset(df.columns):
-            df['child_ops'] = df['demo_age_5_17']
-            df['adult_ops'] = df['demo_age_17_']
-            df['data_type'] = 'Demographic Update'
-        else:
-            continue
-
-        df = df[['date', 'state', 'district', 'child_ops', 'adult_ops', 'data_type']]
-        frames.append(df)
 
     if not frames:
         return pd.DataFrame()
@@ -92,10 +110,43 @@ def load_geojson(path):
         with open(path, "r") as f:
             return json.load(f)
     except FileNotFoundError:
+        st.warning(f"GeoJSON file not found: {path}")
+        return None
+    except Exception as e:
+        st.error(f"Error loading GeoJSON: {str(e)}")
         return None
 
-india_states_geo = load_geojson("file2_normalized.geojson")
-india_districts_geo = load_geojson("india (2).geojson")
+# Try multiple possible paths for GeoJSON files
+possible_state_paths = [
+  
+    "file2_normalized.geojson",
+    
+]
+
+possible_district_paths = [
+    
+    "india (2).geojson",
+    
+]
+
+india_states_geo = None
+for path in possible_state_paths:
+    india_states_geo = load_geojson(path)
+    if india_states_geo:
+        break
+
+india_districts_geo = None
+for path in possible_district_paths:
+    india_districts_geo = load_geojson(path)
+    if india_districts_geo:
+        break
+
+# Check if state GeoJSON loaded successfully
+if not india_states_geo:
+    st.error("⚠️ State GeoJSON file not found. Map visualization will be limited.")
+    st.info("Please ensure 'file2_normalized.geojson' is in the root directory or '/content/' folder.")
+    # Create a minimal structure to prevent crashes
+    india_states_geo = {"type": "FeatureCollection", "features": []}
 
 # ====================================================
 # STATE NAME NORMALIZATION (ENHANCED)
@@ -111,8 +162,12 @@ def norm(s):
         .strip()
     )
 
-# Detect correct state property key
-STATE_KEY = list(india_states_geo['features'][0]['properties'].keys())[0]
+# Detect correct state property key (with safety check)
+STATE_KEY = None
+if india_states_geo and len(india_states_geo.get('features', [])) > 0:
+    STATE_KEY = list(india_states_geo['features'][0]['properties'].keys())[0]
+else:
+    STATE_KEY = 'state'  # Default fallback
 
 # Build lookup for GeoJSON state names
 geo_state_lookup = {
@@ -218,7 +273,22 @@ st.markdown("---")
 # ====================================================
 st.subheader("🗺️ Regional Distribution")
 
-if state_choice == "All India":
+# Check if we have GeoJSON data for mapping
+has_geojson = india_states_geo and len(india_states_geo.get('features', [])) > 0
+
+if not has_geojson:
+    st.warning("📊 Map visualization unavailable (GeoJSON files not found). Showing data table instead.")
+    if state_choice == "All India":
+        state_summary = df.groupby('state_geo', as_index=False).agg(
+            total_ops=(metric_col, 'sum')
+        ).sort_values('total_ops', ascending=False)
+        st.dataframe(state_summary, use_container_width=True)
+    else:
+        dist_summary = filtered_df.groupby('district', as_index=False).agg(
+            total_ops=(metric_col, 'sum')
+        ).sort_values('total_ops', ascending=False)
+        st.dataframe(dist_summary, use_container_width=True)
+elif state_choice == "All India":
     # --- STATE VIEW (No changes needed - already working) ---
     state_view = (
         df.groupby('state_geo', as_index=False)
@@ -252,13 +322,25 @@ if state_choice == "All India":
     ))
     
     fig_map.update_layout(
-        geo_style="carto-darkmatter",
-        geo_scope='asia',
-        geo_center={"lat": 23.5, "lon": 78.5},
-        geo_projection_scale=4,
+        geo=dict(
+            scope='asia',
+            center={"lat": 23.5, "lon": 78.5},
+            projection_scale=4,
+            bgcolor='rgba(0,0,0,0)',
+            showland=True,
+            landcolor='rgb(50,50,50)',
+            showocean=True,
+            oceancolor='rgb(30,30,30)',
+            showcountries=True,
+            countrycolor='rgb(100,100,100)',
+            showlakes=True,
+            lakecolor='rgb(30,30,30)'
+        ),
         margin={"r":0,"t":40,"l":0,"b":0},
         height=600,
-        title="State-wise Aadhaar Operations (All India)"
+        title="State-wise Aadhaar Operations (All India)",
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)'
     )
 
 else:
@@ -375,9 +457,12 @@ else:
                 else:
                     # Fallback if no coordinates found
                     fig_map.update_layout(
-                        geo_scope='asia',
-                        geo_center={"lat": 23.5, "lon": 78.5},
-                        geo_projection_scale=5,
+                        geo=dict(
+                            scope='asia',
+                            center={"lat": 23.5, "lon": 78.5},
+                            projection_scale=5,
+                            bgcolor='rgba(0,0,0,0)'
+                        ),
                         margin={"r":0,"t":40,"l":0,"b":0},
                         height=600,
                         title=f"District-wise Aadhaar Operations — {state_choice}"
@@ -559,11 +644,11 @@ if use_ai:
         if NEW_GENAI:
             # Use new google.genai package
             client = genai.Client(api_key=api_key)
-            model_name = "gemini-1.5-flash"
+            model_name = "gemini-flash-latest"
         else:
             # Use old google.generativeai package
             genai.configure(api_key=api_key)
-            model = genai.GenerativeModel("gemini-1.5-flash")
+            model = genai.GenerativeModel("gemini-flash-latest")
 
         top_districts = (
             filtered_df.groupby('district')[['total_ops', 'child_ops', 'adult_ops']]
