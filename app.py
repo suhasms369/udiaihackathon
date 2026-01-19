@@ -1,14 +1,21 @@
 # ============================================================
-# Aadhaar Operational Intelligence Dashboard
+# Aadhaar Operational Intelligence Dashboard - FIXED
 # ============================================================
 
 import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-import google.generativeai as genai
+try:
+    from google import genai
+    NEW_GENAI = True
+except ImportError:
+    import google.generativeai as genai
+    NEW_GENAI = False
 import json
 import os
+import warnings
+warnings.filterwarnings('ignore')
 
 # -------------------- PAGE CONFIG --------------------
 st.set_page_config(
@@ -87,11 +94,11 @@ def load_geojson(path):
     except FileNotFoundError:
         return None
 
-india_states_geo = load_geojson("./file2_normalized.geojson")
-india_districts_geo = load_geojson("./india (2).geojson")
+india_states_geo = load_geojson("/content/file2_normalized.geojson")
+india_districts_geo = load_geojson("/content/india (2).geojson")
 
 # ====================================================
-# STATE NAME NORMALIZATION 
+# STATE NAME NORMALIZATION (ENHANCED)
 # ====================================================
 def norm(s):
     """Enhanced normalization for better matching"""
@@ -118,7 +125,7 @@ df['state_norm'] = df['state'].apply(norm)
 df['state_geo'] = df['state_norm'].map(geo_state_lookup)
 
 # ====================================================
-# DISTRICT NAME NORMALIZATION 
+# DISTRICT NAME NORMALIZATION (NEW - CRITICAL FIX)
 # ====================================================
 if india_districts_geo:
     # First, identify the district property key
@@ -207,7 +214,7 @@ k4.metric("Active Districts", filtered_df['district'].nunique())
 st.markdown("---")
 
 # ====================================================
-# MAP VISUALIZATION 
+# MAP VISUALIZATION (FIXED FOR DISTRICTS)
 # ====================================================
 st.subheader("🗺️ Regional Distribution")
 
@@ -231,7 +238,7 @@ if state_choice == "All India":
             z_values.append(state_data_dict[state_name])
             text_values.append(f"{state_name}<br>{state_data_dict[state_name]:,}")
     
-    fig_map = go.Figure(go.Choroplethmapbox(
+    fig_map = go.Figure(go.Choroplethmap(
         geojson=india_states_geo,
         locations=locations,
         z=z_values,
@@ -245,9 +252,10 @@ if state_choice == "All India":
     ))
     
     fig_map.update_layout(
-        mapbox_style="carto-darkmatter",
-        mapbox_zoom=3.5,
-        mapbox_center={"lat": 23.5, "lon": 78.5},
+        geo_style="carto-darkmatter",
+        geo_scope='asia',
+        geo_center={"lat": 23.5, "lon": 78.5},
+        geo_projection_scale=4,
         margin={"r":0,"t":40,"l":0,"b":0},
         height=600,
         title="State-wise Aadhaar Operations (All India)"
@@ -367,9 +375,9 @@ else:
                 else:
                     # Fallback if no coordinates found
                     fig_map.update_layout(
-                        mapbox_style="carto-darkmatter",
-                        mapbox_zoom=5,
-                        mapbox_center={"lat": 23.5, "lon": 78.5},
+                        geo_scope='asia',
+                        geo_center={"lat": 23.5, "lon": 78.5},
+                        geo_projection_scale=5,
                         margin={"r":0,"t":40,"l":0,"b":0},
                         height=600,
                         title=f"District-wise Aadhaar Operations — {state_choice}"
@@ -396,7 +404,7 @@ else:
         fig_map = None
 
 if fig_map:
-    st.plotly_chart(fig_map, use_container_width=True)
+    st.plotly_chart(fig_map, width='stretch')
 
 st.caption(
     "Map highlights regional concentration of Aadhaar operations, "
@@ -460,7 +468,7 @@ fig_state_mix = px.bar(
     barmode='stack'
 )
 fig_state_mix.update_layout(xaxis_tickangle=45)
-d1.plotly_chart(fig_state_mix, use_container_width=True)
+d1.plotly_chart(fig_state_mix, width='stretch')
 d1.caption("Shows whether states focus on enrolment or updates - indicates maturity.")
 
 scatter = (
@@ -478,7 +486,7 @@ fig_scatter = px.scatter(
     title="👶👨 Child vs Adult Operations (District Level)",
     labels={'child_ops': 'Child Ops (0-17)', 'adult_ops': 'Adult Ops (18+)'}
 )
-d2.plotly_chart(fig_scatter, use_container_width=True)
+d2.plotly_chart(fig_scatter, width='stretch')
 d2.caption("Shows demographic skew - districts above diagonal have more adult operations.")
 
 st.markdown("---")
@@ -548,8 +556,14 @@ if use_ai:
                                 help="API key not configured. Enter your key or contact admin.")
     
     if api_key:
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel("gemini-flash-latest")
+        if NEW_GENAI:
+            # Use new google.genai package
+            client = genai.Client(api_key=api_key)
+            model_name = "gemini-1.5-flash"
+        else:
+            # Use old google.generativeai package
+            genai.configure(api_key=api_key)
+            model = genai.GenerativeModel("gemini-1.5-flash")
 
         top_districts = (
             filtered_df.groupby('district')[['total_ops', 'child_ops', 'adult_ops']]
@@ -607,20 +621,28 @@ Include:
 Use assistive language, not directives. Include confidence levels with reasoning.
 """
                 try:
-                    response = model.generate_content(prompt)
-                    
+                    if NEW_GENAI:
+                        response = client.models.generate_content(
+                            model=model_name,
+                            contents=prompt
+                        )
+                        response_text = response.text
+                    else:
+                        response = model.generate_content(prompt)
+                        response_text = response.text
+                                        
                     if 'analysis_done' not in st.session_state:
                         st.session_state.analysis_done = False
                     if 'chat_history' not in st.session_state:
                         st.session_state.chat_history = []
                     
                     st.session_state.analysis_done = True
-                    st.session_state.initial_analysis = response.text
+                    st.session_state.initial_analysis = response_text
                     st.session_state.data_context = data_context
                     
                     st.markdown("---")
                     st.markdown("### 📊 AI-Assisted Pattern Recognition")
-                    st.markdown(response.text)
+                    st.markdown(response_text)
                     
                 except Exception as e:
                     st.error(f"Error: {str(e)}")
@@ -653,8 +675,15 @@ Answer based ONLY on the data above. Be specific and cite numbers.
 If data doesn't contain the answer, say so clearly.
 """
                     try:
-                        qa_response = model.generate_content(qa_prompt)
-                        answer = qa_response.text
+                        if NEW_GENAI:
+                            qa_response = client.models.generate_content(
+                                model=model_name,
+                                contents=qa_prompt
+                            )
+                            answer = qa_response.text
+                        else:
+                            qa_response = model.generate_content(qa_prompt)
+                            answer = qa_response.text
                         
                         st.session_state.chat_history.append({
                             'question': user_question,
