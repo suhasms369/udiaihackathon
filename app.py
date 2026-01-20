@@ -6,16 +6,11 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-try:
-    from google import genai
-    NEW_GENAI = True
-except ImportError:
-    import google.generativeai as genai
-    NEW_GENAI = False
+import google.generativeai as genai
 import json
 import os
-import warnings
-warnings.filterwarnings('ignore')
+
+MAX_CHAT_HISTORY = 5
 
 # -------------------- PAGE CONFIG --------------------
 st.set_page_config(
@@ -36,56 +31,38 @@ st.caption(
 # ====================================================
 @st.cache_data
 def load_data():
-    # Try multiple possible locations for CSV files
-    search_paths = ['.', '/mount/src/udiaihackathon', 'data']
-    files = []
-    
-    for path in search_paths:
-        try:
-            if os.path.exists(path):
-                found_files = [os.path.join(path, f) for f in os.listdir(path) if f.endswith('.csv')]
-                files.extend(found_files)
-        except Exception:
-            continue
-    
-    if not files:
-        return pd.DataFrame()
-    
+    files = [f for f in os.listdir('.') if f.endswith('.csv')]
     frames = []
 
     for f in files:
-        try:
-            df = pd.read_csv(f)
-            df.columns = df.columns.str.strip().str.lower()
+        df = pd.read_csv(f)
+        df.columns = df.columns.str.strip().str.lower()
 
-            if not {'date', 'state', 'district'}.issubset(df.columns):
-                continue
-
-            # ENROLMENT
-            if {'age_0_5', 'age_5_17', 'age_18_greater'}.issubset(df.columns):
-                df['child_ops'] = df['age_0_5'] + df['age_5_17']
-                df['adult_ops'] = df['age_18_greater']
-                df['data_type'] = 'New Enrolment'
-
-            # BIOMETRIC UPDATE
-            elif {'bio_age_5_17', 'bio_age_17_'}.issubset(df.columns):
-                df['child_ops'] = df['bio_age_5_17']
-                df['adult_ops'] = df['bio_age_17_']
-                df['data_type'] = 'Biometric Update'
-
-            # DEMOGRAPHIC UPDATE
-            elif {'demo_age_5_17', 'demo_age_17_'}.issubset(df.columns):
-                df['child_ops'] = df['demo_age_5_17']
-                df['adult_ops'] = df['demo_age_17_']
-                df['data_type'] = 'Demographic Update'
-            else:
-                continue
-
-            df = df[['date', 'state', 'district', 'child_ops', 'adult_ops', 'data_type']]
-            frames.append(df)
-        except Exception as e:
-            st.warning(f"Error loading {f}: {str(e)}")
+        if not {'date', 'state', 'district'}.issubset(df.columns):
             continue
+
+        # ENROLMENT
+        if {'age_0_5', 'age_5_17', 'age_18_greater'}.issubset(df.columns):
+            df['child_ops'] = df['age_0_5'] + df['age_5_17']
+            df['adult_ops'] = df['age_18_greater']
+            df['data_type'] = 'New Enrolment'
+
+        # BIOMETRIC UPDATE
+        elif {'bio_age_5_17', 'bio_age_17_'}.issubset(df.columns):
+            df['child_ops'] = df['bio_age_5_17']
+            df['adult_ops'] = df['bio_age_17_']
+            df['data_type'] = 'Biometric Update'
+
+        # DEMOGRAPHIC UPDATE
+        elif {'demo_age_5_17', 'demo_age_17_'}.issubset(df.columns):
+            df['child_ops'] = df['demo_age_5_17']
+            df['adult_ops'] = df['demo_age_17_']
+            df['data_type'] = 'Demographic Update'
+        else:
+            continue
+
+        df = df[['date', 'state', 'district', 'child_ops', 'adult_ops', 'data_type']]
+        frames.append(df)
 
     if not frames:
         return pd.DataFrame()
@@ -104,49 +81,15 @@ if df.empty:
 # ====================================================
 # GEOJSON LOADERS
 # ====================================================
-@st.cache_data
 def load_geojson(path):
     try:
         with open(path, "r") as f:
             return json.load(f)
     except FileNotFoundError:
-        st.warning(f"GeoJSON file not found: {path}")
-        return None
-    except Exception as e:
-        st.error(f"Error loading GeoJSON: {str(e)}")
         return None
 
-# Try multiple possible paths for GeoJSON files
-possible_state_paths = [
-  
-    "file2_normalized.geojson",
-    
-]
-
-possible_district_paths = [
-    
-    "india (2).geojson",
-    
-]
-
-india_states_geo = None
-for path in possible_state_paths:
-    india_states_geo = load_geojson(path)
-    if india_states_geo:
-        break
-
-india_districts_geo = None
-for path in possible_district_paths:
-    india_districts_geo = load_geojson(path)
-    if india_districts_geo:
-        break
-
-# Check if state GeoJSON loaded successfully
-if not india_states_geo:
-    st.error("⚠️ State GeoJSON file not found. Map visualization will be limited.")
-    st.info("Please ensure 'file2_normalized.geojson' is in the root directory or '/content/' folder.")
-    # Create a minimal structure to prevent crashes
-    india_states_geo = {"type": "FeatureCollection", "features": []}
+india_states_geo = load_geojson("./file2_normalized.geojson")
+india_districts_geo = load_geojson("./india (2).geojson")
 
 # ====================================================
 # STATE NAME NORMALIZATION (ENHANCED)
@@ -162,12 +105,8 @@ def norm(s):
         .strip()
     )
 
-# Detect correct state property key (with safety check)
-STATE_KEY = None
-if india_states_geo and len(india_states_geo.get('features', [])) > 0:
-    STATE_KEY = list(india_states_geo['features'][0]['properties'].keys())[0]
-else:
-    STATE_KEY = 'state'  # Default fallback
+# Detect correct state property key
+STATE_KEY = list(india_states_geo['features'][0]['properties'].keys())[0]
 
 # Build lookup for GeoJSON state names
 geo_state_lookup = {
@@ -273,22 +212,7 @@ st.markdown("---")
 # ====================================================
 st.subheader("🗺️ Regional Distribution")
 
-# Check if we have GeoJSON data for mapping
-has_geojson = india_states_geo and len(india_states_geo.get('features', [])) > 0
-
-if not has_geojson:
-    st.warning("📊 Map visualization unavailable (GeoJSON files not found). Showing data table instead.")
-    if state_choice == "All India":
-        state_summary = df.groupby('state_geo', as_index=False).agg(
-            total_ops=(metric_col, 'sum')
-        ).sort_values('total_ops', ascending=False)
-        st.dataframe(state_summary, use_container_width=True)
-    else:
-        dist_summary = filtered_df.groupby('district', as_index=False).agg(
-            total_ops=(metric_col, 'sum')
-        ).sort_values('total_ops', ascending=False)
-        st.dataframe(dist_summary, use_container_width=True)
-elif state_choice == "All India":
+if state_choice == "All India":
     # --- STATE VIEW (No changes needed - already working) ---
     state_view = (
         df.groupby('state_geo', as_index=False)
@@ -308,7 +232,7 @@ elif state_choice == "All India":
             z_values.append(state_data_dict[state_name])
             text_values.append(f"{state_name}<br>{state_data_dict[state_name]:,}")
     
-    fig_map = go.Figure(go.Choroplethmap(
+    fig_map = go.Figure(go.Choroplethmapbox(
         geojson=india_states_geo,
         locations=locations,
         z=z_values,
@@ -322,25 +246,12 @@ elif state_choice == "All India":
     ))
     
     fig_map.update_layout(
-        geo=dict(
-            scope='asia',
-            center={"lat": 23.5, "lon": 78.5},
-            projection_scale=4,
-            bgcolor='rgba(0,0,0,0)',
-            showland=True,
-            landcolor='rgb(50,50,50)',
-            showocean=True,
-            oceancolor='rgb(30,30,30)',
-            showcountries=True,
-            countrycolor='rgb(100,100,100)',
-            showlakes=True,
-            lakecolor='rgb(30,30,30)'
-        ),
+        mapbox_style="carto-darkmatter",
+        mapbox_zoom=3.5,
+        mapbox_center={"lat": 23.5, "lon": 78.5},
         margin={"r":0,"t":40,"l":0,"b":0},
         height=600,
-        title="State-wise Aadhaar Operations (All India)",
-        paper_bgcolor='rgba(0,0,0,0)',
-        plot_bgcolor='rgba(0,0,0,0)'
+        title="State-wise Aadhaar Operations (All India)"
     )
 
 else:
@@ -457,12 +368,9 @@ else:
                 else:
                     # Fallback if no coordinates found
                     fig_map.update_layout(
-                        geo=dict(
-                            scope='asia',
-                            center={"lat": 23.5, "lon": 78.5},
-                            projection_scale=5,
-                            bgcolor='rgba(0,0,0,0)'
-                        ),
+                        mapbox_style="carto-darkmatter",
+                        mapbox_zoom=5,
+                        mapbox_center={"lat": 23.5, "lon": 78.5},
                         margin={"r":0,"t":40,"l":0,"b":0},
                         height=600,
                         title=f"District-wise Aadhaar Operations — {state_choice}"
@@ -489,7 +397,8 @@ else:
         fig_map = None
 
 if fig_map:
-    st.plotly_chart(fig_map, width='stretch')
+    st.plotly_chart(fig_map, use_container_width=True)
+    del fig_map
 
 st.caption(
     "Map highlights regional concentration of Aadhaar operations, "
@@ -510,6 +419,7 @@ daily = filtered_df.groupby('date')[metric_col].sum().reset_index()
 fig_trend = px.area(daily, x='date', y=metric_col, 
                     title="📈 Temporal Trend of Operations")
 c1.plotly_chart(fig_trend, use_container_width=True)
+del fig_trend
 c1.caption("Reveals temporal surges possibly driven by campaigns or deadlines.")
 
 district_totals = (
@@ -532,6 +442,7 @@ fig_top_bottom = px.bar(
     color_discrete_map={'Top 10': '#ff6b6b', 'Bottom 10': '#4ecdc4'}
 )
 c2.plotly_chart(fig_top_bottom, use_container_width=True)
+del fig_top_bottom
 c2.caption("Identifies high-performing and under-served districts for resource allocation.")
 
 st.markdown("---")
@@ -553,7 +464,8 @@ fig_state_mix = px.bar(
     barmode='stack'
 )
 fig_state_mix.update_layout(xaxis_tickangle=45)
-d1.plotly_chart(fig_state_mix, width='stretch')
+d1.plotly_chart(fig_state_mix, use_container_width=True)
+del fig_state_mix
 d1.caption("Shows whether states focus on enrolment or updates - indicates maturity.")
 
 scatter = (
@@ -571,7 +483,8 @@ fig_scatter = px.scatter(
     title="👶👨 Child vs Adult Operations (District Level)",
     labels={'child_ops': 'Child Ops (0-17)', 'adult_ops': 'Adult Ops (18+)'}
 )
-d2.plotly_chart(fig_scatter, width='stretch')
+d2.plotly_chart(fig_scatter, use_container_width=True)
+del fig_scatter
 d2.caption("Shows demographic skew - districts above diagonal have more adult operations.")
 
 st.markdown("---")
@@ -596,6 +509,7 @@ fig_dow = px.bar(
     color_continuous_scale='Blues'
 )
 e1.plotly_chart(fig_dow, use_container_width=True)
+del fig_dow
 e1.caption("Identifies weekly operational patterns - useful for staffing decisions.")
 
 filtered_df['month'] = filtered_df['date'].dt.to_period('M').astype(str)
@@ -614,6 +528,7 @@ fig_monthly = px.line(
 )
 fig_monthly.update_layout(xaxis_tickangle=45)
 e2.plotly_chart(fig_monthly, use_container_width=True)
+del fig_monthly
 e2.caption("Shows seasonal patterns and growth trends across operation types.")
 
 st.markdown("---")
@@ -641,14 +556,8 @@ if use_ai:
                                 help="API key not configured. Enter your key or contact admin.")
     
     if api_key:
-        if NEW_GENAI:
-            # Use new google.genai package
-            client = genai.Client(api_key=api_key)
-            model_name = "gemini-flash-latest"
-        else:
-            # Use old google.generativeai package
-            genai.configure(api_key=api_key)
-            model = genai.GenerativeModel("gemini-flash-latest")
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel("gemini-flash-latest")
 
         top_districts = (
             filtered_df.groupby('district')[['total_ops', 'child_ops', 'adult_ops']]
@@ -706,28 +615,20 @@ Include:
 Use assistive language, not directives. Include confidence levels with reasoning.
 """
                 try:
-                    if NEW_GENAI:
-                        response = client.models.generate_content(
-                            model=model_name,
-                            contents=prompt
-                        )
-                        response_text = response.text
-                    else:
-                        response = model.generate_content(prompt)
-                        response_text = response.text
-                                        
+                    response = model.generate_content(prompt)
+                    
                     if 'analysis_done' not in st.session_state:
                         st.session_state.analysis_done = False
                     if 'chat_history' not in st.session_state:
                         st.session_state.chat_history = []
                     
                     st.session_state.analysis_done = True
-                    st.session_state.initial_analysis = response_text
+                    st.session_state.initial_analysis = response.text
                     st.session_state.data_context = data_context
                     
                     st.markdown("---")
                     st.markdown("### 📊 AI-Assisted Pattern Recognition")
-                    st.markdown(response_text)
+                    st.markdown(response.text)
                     
                 except Exception as e:
                     st.error(f"Error: {str(e)}")
@@ -760,20 +661,16 @@ Answer based ONLY on the data above. Be specific and cite numbers.
 If data doesn't contain the answer, say so clearly.
 """
                     try:
-                        if NEW_GENAI:
-                            qa_response = client.models.generate_content(
-                                model=model_name,
-                                contents=qa_prompt
-                            )
-                            answer = qa_response.text
-                        else:
-                            qa_response = model.generate_content(qa_prompt)
-                            answer = qa_response.text
+                        qa_response = model.generate_content(qa_prompt)
+                        answer = qa_response.text
                         
                         st.session_state.chat_history.append({
                             'question': user_question,
                             'answer': answer
                         })
+                        
+                        # ✅ LIMIT MEMORY
+                        st.session_state.chat_history = st.session_state.chat_history[-MAX_CHAT_HISTORY:]
                         
                         st.markdown("**Your Question:**")
                         st.info(user_question)
