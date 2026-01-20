@@ -550,7 +550,7 @@ use_ai = st.checkbox("Enable AI-Assisted Analysis")
 if use_ai:
     # Try to get API key from secrets first, fallback to user input
     try:
-        api_key = st.secrets["GEMINI_API_KEY"]
+        api_key = os.getenv("GEMINI_API_KEY")
     except:
         api_key = st.text_input("Gemini API Key", type="password", 
                                 help="API key not configured. Enter your key or contact admin.")
